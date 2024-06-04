@@ -1,0 +1,999 @@
+---
+title: "Breathless VR"
+author: "Lucy Starling"
+date: '2023-11-13'
+output: html_document
+---
+```
+Participants cycled on an exercise bike while wearing a VR headset. In VR they saw hills of different gradients (steepness), and the bike got more difficult to pedal depending on how steep the hill was. 
+There were 2 sessions, and participants cycled the course twice per session. In 1 session the hills that participants saw were the same as what participants felt (congruent, i.e. hill matched visually and physically). In another session the visual hill was EASIER than what participants felt (incongruent, hill did not match visually and physically). 
+Participants gave a rating of their breathlessness and leg fatigue from 1 to 10 (1 = not breathless/tired, 10 = very breathless/tired) at the end of each hill. 
+
+We want to see whether the breathlessness/leg fatigue ratings were lower in the incongruent condition. If it looks easier people will think it is easier and feel less breathless at the end, despite doing the same work.
+We hoped to use an ANCOVA to find this, but aren't sure how to interpret the results.
+
+We also asked a load of questionnaires before the study. We want to reduce the number of questionnaires by using a LASSO (or equivalent method) to only include relevant ones, however the LASSO showed that all questionnaires contributed independently. A correlation matrix showed that all of the questionnaires are correlated to each other, so some of them should have been knocked out by the LASSO!
+```
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+
+library(MASS)
+library(effectsize)
+library(FSA)
+library(rcompanion)
+#install.packages("dplyr")
+library(dplyr)
+#install.packages("tidyverse")
+library(tidyverse)
+#install.packages("ggplot2")
+library(ggplot2)
+library(ggpubr)
+#install.packages("lme4")
+library(lme4)
+#install.packages("report")
+library(report)
+#install.packages("lmerTest")
+library(lmerTest)
+#install.packages("car")
+library(car)
+#install.packages("MuMIn")
+library(MuMIn)
+library(glmnet)
+
+# Set seed for reproducibility
+set.seed(123)
+
+full_df <- read.csv("C:\\Users\\lucys\\Desktop\\BreathlessVR_Data\\full_VR_data.csv")
+full_df <- dplyr::select(full_df, 2:ncol(full_df))
+
+full_df<-full_df[!(full_df$ppt_id==7 | full_df$ppt_id==20 | full_df$ppt_id==45),]
+str(full_df)
+```
+
+```{r}
+full_df$maia_total <- as.numeric(full_df$maia_total, na.rm = TRUE)
+full_df$ssq_total <- as.numeric(full_df$ssq_total, na.rm = TRUE)
+full_df$pq_total <- as.numeric(full_df$pq_total, na.rm = TRUE)
+
+
+```
+## Breathless VR analysis
+
+This document is a work in progress by LS last updated 22/03/2024
+
+## Things that need doing:
+reducing the number of observations from every 0.5 seconds to every stage/section of course, or every session, or just something smaller than it is now
+
+
+#### Workflow in Excel to prepare for import
+1. A macro was used to format the sheets: delete the time variable; add participant, session, breath and leg variables; and make speed and power lower case
+2. A vlookup function was used to match and enter perception data into the 'exercise' file. These were checked for accuracy.
+3. Each participant had a maximum of 4 'exercise' files. These were combined so that there was 1 file per participant inc. all exercise and perception data.
+4. David used loops to combine all files into one, Lucy used an extensive script to add in all questionnaire scores too. Starting from all questionnaire scores & full df
+
+We removed participant 7, 20, & 45 from the analysis due to protocol violation and inability to complete the course.
+
+### REMOVING STAGE 2, 4 AND 6
+
+removing the warmup stages 
+```{r}
+full_df <- full_df %>%  filter(stage > 6)
+
+```
+
+#### Finding the mean for each participant across session
+
+```{r, echo = FALSE}
+means_df <- full_df %>%
+  group_by(ppt_id, session, congruent) %>%
+  summarize(mean_breath = mean(breath),
+            mean_leg = mean(leg),
+            mean_cadence = mean(cadence),
+            mean_power = mean(power),
+            mean_heart_rate = mean(heart_rate),
+            mean_time = mean(time_elapsed)
+  )
+means_df <- data.frame(means_df)
+```
+
+## Descriptive statistics
+
+number of participants, age, sex, days between visit (mean and range and sd)
+
+```{r summary table for descriptive statistics}
+## number of participants
+## age
+summary_table <- full_df %>%
+  group_by(ppt_id) %>%
+  summarise(
+    average_age = mean(age),
+    gender = mean(gender),
+    days_between_visits = mean(days.between),
+    height = mean(as.numeric(height)),
+    weight = mean(as.numeric(weight)),
+    time = mean(time_elapsed)
+  )
+summary(summary_table)
+```
+```{r age}
+max(summary_table$average_age, na.rm = TRUE)
+min(summary_table$average_age, na.rm = TRUE)
+mean(summary_table$average_age, na.rm = TRUE)
+median(summary_table$average_age, na.rm = TRUE)
+sd(summary_table$average_age, na.rm=TRUE)
+```
+```{r gender}
+gender_counts <- table(summary_table$gender)
+print(gender_counts)
+```
+```{r days between}
+max(summary_table$days_between_visits, na.rm = TRUE)
+min(summary_table$days_between_visits, na.rm = TRUE)
+mean(summary_table$days_between_visits, na.rm = TRUE)
+sd(summary_table$days_between_visits, na.rm=TRUE)
+```
+```{r height and weight}
+#max(summary_table$height, na.rm = TRUE)
+#min(summary_table$height, na.rm = TRUE)
+mean(summary_table$height, na.rm = TRUE)
+sd(summary_table$height, na.rm=TRUE)
+
+#max(summary_table$weight, na.rm = TRUE)
+#min(summary_table$weight, na.rm = TRUE)
+mean(summary_table$weight, na.rm = TRUE)
+sd(summary_table$weight, na.rm=TRUE)
+
+```
+
+```{r height weight bmi by gender}
+height_weight <- full_df %>%
+  group_by(ppt_id) %>%
+  summarise(
+    gender = mean(gender),
+    height = mean(as.numeric(height)),
+    weight = mean(as.numeric(weight))
+  )
+
+height_weight$height_meters <- height_weight$height / 100
+
+height_weight$BMI <- height_weight$weight / (height_weight$height_meters^2)
+
+bmi <- height_weight %>%
+  group_by(gender) %>%
+  summarise(avg_bmi = mean(BMI, na.rm = TRUE),
+            sd_bmi = sd(BMI, na.rm = TRUE),
+            avg_h = mean(height_meters, na.rm = TRUE),
+            sd_h = sd(height_meters, na.rm = TRUE),
+            avg_w = mean(weight, na.rm = TRUE), 
+            sd_w = sd(weight, na.rm = TRUE))
+summary(bmi)
+```
+
+```{r bmi calculation - RUN THIS}
+full_df$height = as.numeric(full_df$height)
+full_df$weight = as.numeric(full_df$weight)
+
+full_df$height_meters <- full_df$height / 100
+
+full_df$BMI <- full_df$weight / (full_df$height_meters^2)
+
+
+
+#max(summary_table$BMI, na.rm = TRUE)
+##min(summary_table$BMI, na.rm = TRUE)
+mean(full_df$BMI, na.rm = TRUE)
+sd(full_df$BMI, na.rm=TRUE)
+```
+
+
+## Question 1: Did participants apply more power in the high vs. low slope resistance conditions?
+
+This is fundamental to the study design: higher resistance should equal greater power across all slope resistances
+First, we need to change the variable 'slope_resistance' to factor
+
+```{r power test}
+full_df$slope_resistance <- as.factor(full_df$slope_resistance)
+
+```
+I will then create a box plot showing power at each level of slope resistance.
+
+```{r power box plot}
+power_observed_slope <- ggplot(full_df, aes(x=slope_resistance, y=power)) + 
+  geom_boxplot()
+power_observed_slope
+
+
+# Density plot
+ggdensity(full_df$power, fill = "lightgray")
+# QQ plot
+ggqqplot(full_df$power)
+```
+
+I'll centre and scale the data before creating the regression model, which should help with normality.
+For now, let's perform a Kruskal Wallis test to determine if power is different across slope resistances
+```{r power kruskal test}
+kruskal.test(power ~ slope_resistance, data = full_df)
+#p = 2.2e-16, so we can confidentially conclude that power changes across the levels of slope resistance
+epsilonSquared(x = full_df$power, g = full_df$slope_resistance)
+#0.334 shows a relatively strong effect size
+
+```
+
+
+
+
+```{r scale and center}
+#Now to center and scale the continuous data, which will facilitate comparisons, model convergence, and interpretation of the results
+#Select continuous variables to center and scale
+vars_to_scale <- c("speed", "power", "heart_rate", "observed_slope", "distance_travelled", "cadence","BMI")
+#Center and scale selected variables
+full_df[, vars_to_scale] <- scale(full_df[, vars_to_scale])
+
+
+# Density plot
+ggdensity(full_df$power, fill = "lightgray")
+# QQ plot
+ggqqplot(full_df$power)
+
+
+```
+
+```{r}
+ggplot(full_df, aes(x = slope_resistance, y = breath, group = ppt_id, color = congruent)) +
+  geom_line()
+
+
+```
+
+```{r NE}
+
+## are breath values distributed
+full_df%>%filter(slope_resistance == 1)%>%
+  ggplot(aes(x=breath, fill=as.factor(congruent)), position = 'identity') + geom_histogram() + facet_wrap(~congruent)
+
+# does power depend upon condition
+full_df%>%ggplot(aes(x=as.factor(congruent), y=power)) + geom_boxplot()
+
+ggplot(full_df, aes(x=slope_resistance, y=power, color=as.factor(congruent)), group=congruent) +
+  geom_boxplot() + 
+  geom_line(full_df%>%group_by(slope_resistance, congruent)%>%summarize(median = median(power))%>%ungroup(), 
+            mapping = aes(x=slope_resistance, y=median, color=as.factor(congruent), group = congruent))
+```
+``` {r NE}
+# breath scales with power, but only for below breath 7
+ggplot(full_df, aes(x=power, y=as.factor(breath), colour=as.numeric(slope_resistance))) + geom_point() 
+```
+
+``` {r NE}
+full_df%>%group_by(breath, congruent)%>%summarise(power= median(power))%>%ggplot(aes(x=power, y=breath, color=as.factor(congruent))) + geom_point()
+```
+``` {r NE}
+means_df%>%ggplot(aes(x=mean_power, y=mean_breath, colour=as.factor(congruent))) + geom_point()
+```
+
+``` {r NE}
+
+full_df%>%group_by(breath)%>%summarise(power= median(power))%>%ggplot(aes(x=power, y=breath)) + geom_point()
+
+```
+
+``` {r} 
+full_df%>%group_by(ppt_id, breath, slope_resistance, congruent)%>%summarise(power= median(power))%>%
+  ggplot(aes(x=power, y=breath, colour=as.factor(congruent))) + geom_point()
+
+```
+``` {r NE}
+
+medians = full_df %>%  
+  group_by(leg, congruent) %>%  
+  summarize(power = median(power)) %>% 
+  ungroup()
+
+ggplot(full_df, aes(x=as.factor(leg), y=power, color=as.factor(congruent)), group=congruent) +
+  geom_boxplot() + 
+  geom_line(medians, 
+            mapping = aes(x=leg, y=power, color=as.factor(congruent), group = congruent))
+```
+``` {r NE}
+# the tail of the distribution is different
+medians = full_df %>%  
+  group_by(ppt_id, leg, congruent) %>%  
+  summarize(power = median(power)) %>% 
+  ungroup()
+
+medians%>%
+  ggplot(aes(x=power, fill=as.factor(congruent)), position = 'identity') + geom_histogram() + facet_wrap(~congruent)
+
+```
+
+```{r NEa}
+## plot median breath as function of slope_resistance
+
+medians = full_df %>%  
+  group_by(slope_resistance, congruent) %>%  
+  summarize(breath = median(breath)) %>% 
+  ungroup()
+
+ggplot(full_df, aes(x=slope_resistance, y=breath, color=as.factor(congruent)), group=congruent) +
+  geom_boxplot() + 
+  geom_line(medians, 
+            mapping = aes(x=slope_resistance, y=breath, color=as.factor(congruent), group = congruent))
+  
+```
+
+``` {r NE}
+means_df_NE_2 <- full_df %>%
+  group_by(ppt_id, congruent, slope_resistance) %>%
+  summarize(breath = mean(breath),
+            leg = mean(leg),
+            cadence = mean(cadence),
+            power = mean(power),
+            heart_rate = mean(heart_rate),
+            gender = first(gender),
+            age = first(age),
+            BMI = first(BMI),
+            SSQ = mean(ssq_total),
+            CESD = mean(cesd_score),
+            time = mean(time_elapsed))%>%ungroup()
+means_df_NE_2
+```
+
+
+``` {r}
+# random slope takes very long
+#model = lmer(breath ~ as.numeric(slope_resistance) + as.factor(congruent) + (1 + slope_resistance|ppt_id), data = full_df)
+#model = lmer(breath ~ as.numeric(slope_resistance) + as.factor(congruent) + (1|ppt_id), data = full_df)
+#report(model)
+
+base_modelBR = lmer(breath ~ as.numeric(slope_resistance) + as.factor(congruent) + (1|ppt_id), data = means_df_NE_2)
+report(base_modelBR)
+
+```
+
+```{r basic model leg}
+
+base_modelLEG = lmer(leg ~ as.numeric(slope_resistance) + as.numeric(congruent) + (1|ppt_id), data = means_df_NE_2)
+report(base_modelLEG)
+
+```
+```{r medium model breath}
+
+modelBR = lmer(breath ~ power + time + as.numeric(slope_resistance) + as.factor(congruent) + (1|ppt_id), data = means_df_NE_2)
+report(modelBR)
+
+```
+```{r med model leg}
+
+modelLEG = lmer(leg ~ power + time + as.numeric(slope_resistance) + as.factor(congruent) + (1|ppt_id), data = means_df_NE_2)
+report(modelLEG)
+
+```
+```{r full model breath}
+full_modelBR = lmer(breath ~ CESD+ SSQ + power + time + as.numeric(slope_resistance) + as.numeric(congruent) + (1|ppt_id), data = means_df_NE_2)
+report(full_modelBR)
+```
+```{r full model leg}
+full_modelLEG = lmer(leg ~ CESD + SSQ + power + time + as.numeric(slope_resistance) + as.numeric(congruent) + (1|ppt_id), data = means_df_NE_2)
+report(full_modelLEG)
+```
+```{r questionnaire model breath}
+q_modelBR = lmer(breath ~ CESD + SSQ + as.numeric(slope_resistance) + as.factor(congruent) + (1|ppt_id), data = means_df_NE_2)
+report(q_modelBR)
+```
+```{r questionnaire model leg}
+q_modelLEG = lmer(leg ~ CESD + SSQ + as.numeric(slope_resistance) + as.factor(congruent) + (1|ppt_id), data = means_df_NE_2)
+report(q_modelLEG)
+```
+
+``` {r NE leg}
+medians = full_df %>%  
+  group_by(slope_resistance, congruent) %>%  
+  summarize(leg = median(leg)) %>% 
+  ungroup()
+
+ggplot(full_df, aes(x=as.factor(slope_resistance), y=leg, color=as.factor(congruent)), group=congruent) +
+  geom_boxplot() + 
+  geom_line(medians, 
+            mapping = aes(x=slope_resistance, y=leg, color=as.factor(congruent), group = congruent))
+
+
+means_df_NE = full_df %>%
+  group_by(ppt_id, congruent, slope_resistance) %>%
+  summarize(breath = median(breath),
+            leg = median(leg),
+            cadence = median(cadence),
+            power = median(power),
+            heart_rate = median(heart_rate),
+            gender = first(gender),
+            age = first(age),
+            BMI = first(BMI))%>%ungroup()
+
+means_df_NE%>%select(ppt_id, congruent, slope_resistance, leg)%>%ggplot(aes(x=slope_resistance, y=leg, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line() + facet_wrap(~congruent)
+
+diffs = means_df_NE%>%select(ppt_id, congruent, slope_resistance, leg)%>%
+  mutate(congruent = if_else(congruent == '1', 'easier', 'real'))%>%
+  pivot_wider(names_from = congruent, values_from = leg)%>%
+  mutate(diff_leg = easier - real)
+
+ggplot(diffs, aes(x=slope_resistance, y=diff_leg, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line()
+
+diffs_ind = diffs%>%group_by(ppt_id)%>%summarise(diff_leg = median(diff_leg, na.rm=TRUE))
+  
+ggplot(diffs_ind, mapping = aes(x=diff_leg)) + geom_histogram() +
+geom_vline(aes(xintercept = median(diff_leg, na.rm=TRUE)),col='red',size=2)
+  
+
+```
+
+``` {r NE breath per subject}
+medians = full_df %>%  
+  group_by(slope_resistance, congruent) %>%  
+  summarize(breath = median(breath)) %>% 
+  ungroup()
+
+ggplot(full_df, aes(x=as.factor(slope_resistance), y=breath, color=as.factor(congruent)), group=congruent) +
+  geom_boxplot() + 
+  geom_line(medians, 
+            mapping = aes(x=slope_resistance, y=breath, color=as.factor(congruent), group = congruent))
+
+
+means_df_NE = full_df %>%
+  group_by(ppt_id, congruent, slope_resistance) %>%
+  summarize(breath = median(breath),
+            leg = median(breath),
+            cadence = median(cadence),
+            power = median(power),
+            heart_rate = median(heart_rate),
+            gender = first(gender),
+            age = first(age),
+            BMI = first(BMI))%>%ungroup()
+
+
+means_df_NE%>%select(ppt_id, congruent, slope_resistance, breath)%>%ggplot(aes(x=slope_resistance, y=breath, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line() + facet_wrap(~congruent)
+
+diffs = means_df_NE%>%select(ppt_id, congruent, slope_resistance, breath)%>%
+  mutate(congruent = if_else(congruent == '1', 'easier', 'real'))%>%
+  pivot_wider(names_from = congruent, values_from = breath)%>%
+  mutate(diff_breath = easier - real)
+
+ggplot(diffs, aes(x=slope_resistance, y=diff_breath, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line()
+
+diffs_ind = diffs%>%group_by(ppt_id)%>%summarise(diff_breath = median(diff_breath, na.rm=TRUE))
+  
+ggplot(diffs_ind, mapping = aes(x=diff_breath)) + geom_histogram() +
+geom_vline(aes(xintercept = median(diff_breath, na.rm=TRUE)),col='red',size=2)
+  
+
+```
+``` {r NE}
+d = means_df_NE%>%filter(slope_resistance == 2)
+#d%>%filter(slope_resistance == 2)%>%ggplot(aes(y=breath)) + geom_boxplot() + facet_wrap(~congruent)
+
+wilcox.test(weight ~ group, data = d, paired = TRUE)
+
+```
+
+```{r LS binning into 1-3 and 4-6}
+
+medians = full_df %>%  
+  group_by(slope_resistance, congruent) %>%  
+  summarize(leg = median(leg)) %>% 
+  ungroup()
+
+ggplot(full_df, aes(x=as.factor(slope_resistance), y=leg, color=as.factor(congruent)), group=congruent) +
+  geom_boxplot() + 
+  geom_line(medians, 
+            mapping = aes(x=slope_resistance, y=leg, color=as.factor(congruent), group = congruent))
+
+
+means_df_NE = full_df %>%
+  group_by(ppt_id, congruent, slope_resistance) %>%
+  summarize(breath = median(breath),
+            leg = median(leg),
+            cadence = median(cadence),
+            power = median(power),
+            heart_rate = median(heart_rate),
+            gender = first(gender),
+            age = first(age),
+            BMI = first(BMI))%>%ungroup()
+
+means_df_NE$slope_resistance <- as.numeric(means_df_NE$slope_resistance)
+
+#full_df$slope_resistance <- as.factor(full_df$slope_resistance)
+
+means_df_easy <- means_df_NE %>%  filter(slope_resistance < 4)
+
+means_df_hard <- means_df_NE %>% filter(slope_resistance > 3)
+
+means_df_NE$slope_resistance <- as.factor(means_df_NE$slope_resistance)
+means_df_easy$slope_resistance <- as.factor(means_df_easy$slope_resistance)
+means_df_hard$slope_resistance <- as.factor(means_df_hard$slope_resistance)
+
+## easy
+means_df_easy%>%select(ppt_id, congruent, slope_resistance, leg)%>%ggplot(aes(x=slope_resistance, y=leg, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line() + facet_wrap(~congruent)
+
+diffs_e = means_df_easy%>%select(ppt_id, congruent, slope_resistance, leg)%>%
+  mutate(congruent = if_else(congruent == '1', 'easier', 'real'))%>%
+  pivot_wider(names_from = congruent, values_from = leg)%>%
+  mutate(diff_leg_easy = easier - real)
+
+ggplot(diffs_e, aes(x=slope_resistance, y=diff_leg_easy, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line()
+
+diffs_ind_easy = diffs_e%>%group_by(ppt_id)%>%summarise(diff_leg_easy = median(diff_leg_easy, na.rm=TRUE))
+  
+ggplot(diffs_ind_easy, mapping = aes(x=diff_leg_easy)) + geom_histogram() +
+geom_vline(aes(xintercept = median(diff_leg_easy, na.rm=TRUE)),col='red',size=2)
+
+##hard
+means_df_hard%>%select(ppt_id, congruent, slope_resistance, leg)%>%ggplot(aes(x=slope_resistance, y=leg, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line() + facet_wrap(~congruent)
+
+diffs_h = means_df_hard%>%select(ppt_id, congruent, slope_resistance, leg)%>%
+  mutate(congruent = if_else(congruent == '1', 'easier', 'real'))%>%
+  pivot_wider(names_from = congruent, values_from = leg)%>%
+  mutate(diff_leg_hard = easier - real)
+
+ggplot(diffs_h, aes(x=slope_resistance, y=diff_leg_hard, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line()
+
+diffs_ind_hard = diffs_h%>%group_by(ppt_id)%>%summarise(diff_leg_hard = median(diff_leg_hard, na.rm=TRUE))
+  
+ggplot(diffs_ind_hard, mapping = aes(x=diff_leg_hard)) + geom_histogram() +
+geom_vline(aes(xintercept = median(diff_leg_hard, na.rm=TRUE)),col='red',size=2)
+  
+```
+```{r LS BREATHbinning into 1-3 and 4-6}
+
+medians = full_df %>%  
+  group_by(slope_resistance, congruent) %>%  
+  summarize(breath = median(breath)) %>% 
+  ungroup()
+
+ggplot(full_df, aes(x=as.factor(slope_resistance), y=breath, color=as.factor(congruent)), group=congruent) +
+  geom_boxplot() + 
+  geom_line(medians, 
+            mapping = aes(x=slope_resistance, y=breath, color=as.factor(congruent), group = congruent))
+
+
+means_df_NE = full_df %>%
+  group_by(ppt_id, congruent, slope_resistance) %>%
+  summarize(breath = median(breath),
+            leg = median(leg),
+            cadence = median(cadence),
+            power = median(power),
+            heart_rate = median(heart_rate),
+            gender = first(gender),
+            age = first(age),
+            BMI = first(BMI))%>%ungroup()
+
+means_df_NE$slope_resistance <- as.numeric(means_df_NE$slope_resistance)
+
+means_df_easy <- means_df_NE %>%  filter(slope_resistance < 4)
+
+means_df_hard <- means_df_NE %>% filter(slope_resistance > 3)
+
+means_df_NE$slope_resistance <- as.factor(means_df_NE$slope_resistance)
+means_df_easy$slope_resistance <- as.factor(means_df_easy$slope_resistance)
+means_df_hard$slope_resistance <- as.factor(means_df_hard$slope_resistance)
+
+## easy
+means_df_easy%>%select(ppt_id, congruent, slope_resistance, breath)%>%ggplot(aes(x=slope_resistance, y=breath, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line() + facet_wrap(~congruent)
+
+diffs_e = means_df_easy%>%select(ppt_id, congruent, slope_resistance, breath)%>%
+  mutate(congruent = if_else(congruent == '1', 'easier', 'real'))%>%
+  pivot_wider(names_from = congruent, values_from = breath)%>%
+  mutate(diff_breath_easy = easier - real)
+
+ggplot(diffs_e, aes(x=slope_resistance, y=diff_breath_easy, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line()
+
+diffs_ind_easy = diffs_e%>%group_by(ppt_id)%>%summarise(diff_breath_easy = median(diff_breath_easy, na.rm=TRUE))
+  
+ggplot(diffs_ind_easy, mapping = aes(x=diff_breath_easy)) + geom_histogram() +
+geom_vline(aes(xintercept = median(diff_breath_easy, na.rm=TRUE)),col='red',size=2)
+
+##hard
+means_df_hard%>%select(ppt_id, congruent, slope_resistance, breath)%>%ggplot(aes(x=slope_resistance, y=breath, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line() + facet_wrap(~congruent)
+
+diffs_h = means_df_hard%>%select(ppt_id, congruent, slope_resistance, breath)%>%
+  mutate(congruent = if_else(congruent == '1', 'easier', 'real'))%>%
+  pivot_wider(names_from = congruent, values_from = breath)%>%
+  mutate(diff_breath_hard = easier - real)
+
+ggplot(diffs_h, aes(x=slope_resistance, y=diff_breath_hard, colour=as.factor(ppt_id), group=ppt_id)) + geom_point() + geom_line()
+
+diffs_ind_hard = diffs_h%>%group_by(ppt_id)%>%summarise(diff_breath_hard = median(diff_breath_hard, na.rm=TRUE))
+  
+ggplot(diffs_ind_hard, mapping = aes(x=diff_breath_hard)) + geom_histogram() +
+geom_vline(aes(xintercept = median(diff_breath_hard, na.rm=TRUE)),col='red',size=2)
+  
+```
+
+
+``` {r NE}
+means_df_NE%>%select(ppt_id, congruent, slope_resistance, breath)%>%
+  mutate(congruent = if_else(congruent == '1', 'easier', 'real'))%>%
+  pivot_wider(names_from = congruent, values_from = breath)
+```
+
+``` {r NE}
+#diffs
+diffs_ind = diffs%>%group_by(ppt_id)%>%summarise(diff_breath = mean(diff_breath, na.rm=TRUE))
+  
+ggplot(diffs_ind, mapping = aes(x=diff_breath)) + geom_histogram() +
+geom_vline(aes(xintercept = median(diff_breath, na.rm=TRUE)),col='red',size=2)
+  
+
+```
+
+``` {r NE}
+model3 = lmer(breath ~ power + CESD + SSQ + as.numeric(slope_resistance) + as.factor(congruent)
+             + (1|ppt_id), data = means_df_NE_2)
+summary(model3)
+report(model3)
+```
+```{r}
+
+plot(means_df_NE_2$leg, means_df_NE_2$congruent)
+
+```
+
+
+
+```{r main analyses - includes two potential models}
+#Question 2: Is the perception of work of breathing influenced by perceived effort (i.e. virtual slope) independent of actual effort (power) and time spent exercising (time elapsed)
+
+Q2_orig_model <- lmer(breath ~ power + observed_slope + time_elapsed + (1|ppt_id), data = full_df, REML = F)
+summary(Q2_orig_model)
+report(Q2_orig_model)
+vif(Q2_orig_model)
+
+Q2_full_model <- lmer(breath ~ gender + age + days.between + BMI + power + observed_slope + time_elapsed + (1|ppt_id), data = full_df, REML = F)
+summary(Q2_full_model)
+report(Q2_full_model)
+vif(Q2_full_model)
+```
+```{r anova for effect size q2}
+options(es.use_symbols = TRUE)
+
+anova(Q2_full_model)
+
+F_to_eta2(110.45, 1, 12999) #bmi
+F_to_eta2(4636.1272, 1, 40239) #power
+F_to_eta2(1977.1758, 1, 40221) #obs slope
+F_to_eta2(17770.7209, 1, 40224) #time
+
+```
+```{r model without insignif terms}
+Q2_signif_model <- lmer(breath ~ BMI + power + observed_slope + time_elapsed + (1|ppt_id), data = full_df, REML = F)
+summary(Q2_signif_model)
+report(Q2_signif_model)
+vif(Q2_signif_model)
+
+```
+
+
+```{r leg fatigue}
+## same as above but testing leg fatigue instead of breathlessness
+
+Q3_full_model <- lmer(leg ~ gender + age + days.between + BMI + power + observed_slope + time_elapsed + (1|ppt_id), data = full_df, REML = F)
+summary(Q3_full_model)
+report(Q3_full_model)
+vif(Q3_full_model)
+```
+
+```{r effect size for leg}
+anova(Q3_full_model)
+
+F_to_eta2(4.0156,1,44) #age
+F_to_eta2(3339.8143,1,40245) # power
+F_to_eta2(1629.7027,1,40221) # obs slope
+F_to_eta2(18889.9622,1,40223) #time
+```
+
+## Questionnaires
+
+All of the questionnaires that participants were asked to complete were scored in R according to their scoring guidelines and the scores were added into the 'full_df' dataframe used in this markdown.
+
+mean score for each questionnaire, range of scores, sd
+```{r questionnaire table}
+q_table <- full_df %>%
+  group_by(ppt_id) %>%
+  summarise(
+    breath = mean(breath),
+    state_anx = mean(state_anx_score),
+    trait_anx = mean(trait_anx_score),
+    cesd = mean(cesd_score),
+    asi = mean(asi_score),
+    hai = mean(hai_score),
+    catastrophising = mean(catastroph_score),
+    vigilance = mean(vig_score),
+    pos_panas = mean(panas_pos_score),
+    neg_panas = mean(panas_neg_score),
+    fss = mean(fss_score),
+    fatigue = mean(fatigue_scale),
+    maia_1 = mean(maia_scale_1),
+    maia_2 = mean(maia_scale_2),
+    maia_3 = mean(maia_scale_3),
+    maia_4 = mean(maia_scale_4),
+    maia_5 = mean(maia_scale_5),
+    maia_6 = mean(maia_scale_6),
+    maia_7 = mean(maia_scale_7),
+    maia_8 = mean(maia_scale_8),
+    nausea = mean(weighted_nausea_score),
+    oculomotor = mean(weighted_oculo_score),
+    disorientation = mean(weighted_disorientation_score),
+    realism = mean(pq_realism_score),
+    interface = mean(pq_interface_score)
+  )
+
+q_table <- q_table %>% mutate(q_table, maia_total = maia_1 + maia_2 + maia_3 + maia_4 + maia_5 + maia_6 + maia_7 + maia_8)
+q_table <- q_table %>% mutate(q_table, ssq_total = ((nausea/9.54) + (oculomotor/7.58) + (disorientation/13.92) * 3.74))
+q_table <- q_table %>% mutate(q_table, pq_total = realism + interface)
+
+```
+All participant scores are in the q_table dataframe. The next chunk will show average score across the whole group, sd and range of scores.
+```{r}
+column_means <- numeric(ncol(q_table))
+column_max <- numeric(ncol(q_table))
+column_min <- numeric(ncol(q_table))
+column_std_devs <- numeric(ncol(q_table))
+
+for (i in 1:ncol(q_table)) {
+  column_means[i] <- mean(q_table[[i]],na.rm=TRUE)
+  column_max[i] <- max(q_table[[i]], na.rm=TRUE)
+  column_min[i] <- min(q_table[[i]], na.rm = TRUE)
+  column_std_devs[i] <- sd(q_table[[i]], na.rm = TRUE)
+}
+question_names <- c("ppt_id", "state_anx", "trait_anx", "cesd", "asi", "hai", "catastrophising", "vigilance", "pos_panas", "neg_panas", "fss", "fatigue", "maia_1", "maia_2", "maia_3", "maia_4", "maia_5", "maia_6", "maia_7", "maia_8", "nausea", "oculomotor", "disorientation", "realism", "interface", "maia_total", "ssq_total", "pq_total")
+
+questionnaire_means <- cbind(question_names, column_means, column_std_devs)
+
+
+```
+
+``` {r NE}
+p = plot(x=diffs_ind$diff_leg, y=q_table$trait_anx) + geom_point()
+p
+```
+
+### Data reduction
+Find the questionnaires which are significantly related to breathlessness/leg fatigue.
+
+```{r bonferroni corrected normality check}
+shapiro_test_df <- function(df, bonf= TRUE, alpha= 0.05) {
+  l <- lapply(df, shapiro.test)
+  s <- do.call("c", lapply(l, "[[", 1))
+  p <- do.call("c", lapply(l, "[[", 2))
+  if (bonf == TRUE) {
+    sig <- ifelse(p > alpha / length(l), "normal", "not normal")
+  } else {
+    sig <- ifelse(p > alpha, "normal", "not normal")
+  }
+  return(list(statistic= s,
+              p.value= p,
+              significance= sig,
+              method= ifelse(bonf == TRUE, "Shapiro-Wilks test with Bonferroni Correction",
+                             "Shapiro-Wilks test without Bonferroni Correction")))
+}
+q_table$ppt_id <- as.numeric(q_table$ppt_id)
+shapiro_test_df(q_table)
+```
+
+
+``` {r NE}
+selected_columns <- c("breath", "state_anx",
+    "trait_anx",
+    "cesd" ,
+    "asi",
+    "hai" ,
+    "catastrophising",
+    "vigilance" ,
+    "pos_panas",
+    "neg_panas" ,
+    "fss",
+    "fatigue",
+    "pq_total",
+    "ssq_total",
+    'maia_total')
+
+selected_df <- q_table%>%select(all_of(selected_columns))
+
+selected_df <- apply(selected_df, 2, as.numeric)
+
+selected_df <- na.omit(selected_df)
+
+# Compute covariance matrix for selected columns
+cor_matrix <- cor(selected_df)
+
+cor_matrix %>% cor_plot()
+```
+
+```{r testing a new correlation matrix function}
+library(rstatix)
+
+selected_columns <- c("breath","time_elapsed", "speed", "power", "observed_slope", "slope_resistance", "stage", "distance_travelled","heart_rate","cadence","leg","height","weight","gender","congruent","age","days.between","state_anx_score","trait_anx_score","cesd_score","asi_score","hai_score","catastroph_score","vig_score","panas_pos_score","panas_neg_score","fss_score","fatigue_scale","maia_scale_1", "maia_scale_2", "maia_scale_3", "maia_scale_4", "maia_scale_5", "maia_scale_6", "maia_scale_7", "maia_scale_8", "weighted_nausea_score", "weighted_oculo_score", "weighted_disorientation_score", "pq_realism_score", "pq_interface_score", "maia_total", "ssq_total","pq_total","BMI")
+
+selected_df <- full_df[, selected_columns]
+
+selected_df <- apply(selected_df, 2, as.numeric)
+
+selected_df <- na.omit(selected_df)
+
+# Compute covariance matrix for selected columns
+cor_matrix <- cor(selected_df)
+
+# Print the covariance matrix
+
+cor.mat <- selected_df %>% cor()
+
+cor.mat %>%
+  cor_plot()
+
+## smaller lsit of variables:
+#selected_columns <- c("breath", "leg", "stage", "distance_travelled", "time_elapsed", "observed_slope", "heart_rate", "weighted_nausea_score", "power", "weighted_oculo_score", "weighted_disorientation_score", "cesd_score", "panas_neg_score", "hai_score", "days.between", "maia_scale_3", "maia_scale_4", "maia_scale_5", "maia_scale_6", "maia_scale_7", "maia_scale_8", "weighted_nausea_score", "weighted_oculo_score", "weighted_disorientation_score", "pq_realism_score", "pq_interface_score")
+```
+```{r testing Hmisc}
+#install.packages("survival")
+#install.packages("lattice")
+#install.packages("ggplot2")
+#install.packages("Hmisc")
+
+library(Hmisc)
+
+selected_columns <- c("breath","state_anx_score","trait_anx_score","cesd_score","asi_score","hai_score","catastroph_score","vig_score","panas_pos_score","panas_neg_score","fss_score","fatigue_scale","maia_scale_1", "maia_scale_2", "maia_scale_3", "maia_scale_4", "maia_scale_5", "maia_scale_6", "maia_scale_7", "maia_scale_8", "ssq_total","pq_total")
+selected_df <- full_df[, selected_columns]
+
+res <- cor(selected_df)
+
+res2 <- rcorr(as.matrix(selected_df), type = c("spearman"))
+res2
+
+
+# ++++++++++++++++++++++++++++
+# flattenCorrMatrix
+# ++++++++++++++++++++++++++++
+# cormat : matrix of the correlation coefficients
+# pmat : matrix of the correlation p-values
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+library(corrplot)
+
+# Insignificant correlations are left blank
+
+png(filename = "mycorrplot.png", width = 1200, height = 1200)
+corrplot(res2$r, method="color",  
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+         p.mat = res2$P, sig.level = 0.05, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+         )
+dev.off()
+```
+
+Plotting the questionnaires related to breathlessness as a correlation heatmap to see which are most correlated
+
+## LASSO
+run LASSO to take out questionnaires which aren't independently contributing
+problem: they all contribute (as there are so many observations)
+
+
+run one or the other of the following blocks (depending on the number of variables to test)
+
+
+```{r NE Lasso}
+#define response variable
+y <- q_table$breath
+
+#define matrix of predictor variables
+
+##x <- as.data.frame(full_df[, #c("state_anx_score","trait_anx_score","cesd_score","asi_score","hai_score","catastroph_score","vig_score","p#anas_pos_score","panas_neg_score","fss_score","fatigue_scale","maia_scale_1", "maia_scale_2", #"maia_scale_3", "maia_scale_4", "maia_scale_5", "maia_scale_6", "maia_scale_7", "maia_scale_8", #"ssq_total","pq_total")]) 
+
+x<-makeX(q_table%>%select(all_of(selected_columns), -breath), test = NULL, na.impute = TRUE)
+
+#perform k-fold cross-validation to find optimal lambda value
+cv_model <- cv.glmnet(x, y, alpha = 1)
+
+#find optimal lambda value that minimizes test MSE
+best_lambda <- cv_model$lambda.min
+best_lambda
+
+#produce plot of test MSE by lambda value
+plot(cv_model) 
+
+best_model <- glmnet(x, y, alpha = 1, lambda = best_lambda)
+coef(best_model)
+
+#use fitted best model to make predictions
+y_predicted <- predict(best_model, s = best_lambda, newx = x)
+
+#find SST and SSE
+sst <- sum((y - mean(y))^2)
+sse <- sum((y_predicted - y)^2)
+
+#find R-Squared
+rsq <- 1 - sse/sst
+rsq
+```
+
+``` {r NE explore correlation}
+plot(diffs_ind$diff_leg ~q_table$ssq_total)
+summary(lm(diffs_ind$diff_leg ~q_table$ssq_total))
+
+```
+
+
+```{r}
+best_model <- glmnet(x, y, alpha = 1, lambda = best_lambda)
+coef(best_model)
+
+#use fitted best model to make predictions
+y_predicted <- predict(best_model, s = best_lambda, newx = x)
+
+#find SST and SSE
+sst <- sum((y - mean(y))^2)
+sse <- sum((y_predicted - y)^2)
+
+#find R-Squared
+rsq <- 1 - sse/sst
+rsq
+
+```
+
+```{r lasso questionnaires only}
+#define response variable
+y <- full_df$breath
+
+#define matrix of predictor variables
+x <- as.data.frame(full_df[, c("state_anx_score","trait_anx_score","cesd_score","asi_score","hai_score","catastroph_score","vig_score","panas_pos_score","panas_neg_score","fss_score","fatigue_scale","maia_scale_1", "maia_scale_2", "maia_scale_3", "maia_scale_4", "maia_scale_5", "maia_scale_6", "maia_scale_7", "maia_scale_8", "ssq_total","pq_total")]) 
+
+x<-makeX(x, test = NULL, na.impute = TRUE)
+```
+
+```{r lasso all variables}
+y <- full_df$breath
+
+#define matrix of predictor variables
+x <- as.data.frame(full_df[, c("time_elapsed", "speed", "power", "observed_slope", "slope_resistance", "stage", "distance_travelled","heart_rate","cadence","leg","height","weight","gender","congruent","age","days.between","state_anx_score","trait_anx_score","cesd_score","asi_score","hai_score","catastroph_score","vig_score","panas_pos_score","panas_neg_score","fss_score","fatigue_scale","maia_scale_1", "maia_scale_2", "maia_scale_3", "maia_scale_4", "maia_scale_5", "maia_scale_6", "maia_scale_7", "maia_scale_8", "weighted_nausea_score", "weighted_oculo_score", "weighted_disorientation_score", "pq_realism_score", "pq_interface_score", "ssq_total","pq_total","BMI")]) 
+
+x<-makeX(x, test = NULL, na.impute = TRUE)
+```
+
+run this block to begin the LASSO
+```{r}
+#perform k-fold cross-validation to find optimal lambda value
+cv_model <- cv.glmnet(x, y, alpha = 1)
+
+#find optimal lambda value that minimizes test MSE
+best_lambda <- cv_model$lambda.min
+best_lambda
+
+#produce plot of test MSE by lambda value
+plot(cv_model) 
+```
+```{r}
+best_model <- glmnet(x, y, alpha = 1, lambda = best_lambda)
+coef(best_model)
+
+#use fitted best model to make predictions
+y_predicted <- predict(best_model, s = best_lambda, newx = x)
+
+#find SST and SSE
+sst <- sum((y - mean(y))^2)
+sse <- sum((y_predicted - y)^2)
+
+#find R-Squared
+rsq <- 1 - sse/sst
+rsq
+
+
+```
+
